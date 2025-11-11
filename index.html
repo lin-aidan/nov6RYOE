@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Rusher search — plays</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:18px;background:#fafafa;color:#111}
+    h1{font-size:1.25rem;margin-bottom:.5rem}
+    .controls{display:flex;gap:12px;align-items:center;margin-bottom:12px}
+    input[type=text]{padding:8px;border-radius:6px;border:1px solid #ccc;width:320px}
+    input[type=number]{width:90px;padding:6px}
+    button{padding:8px 10px;border-radius:6px;border:1px solid #3b82f6;background:#3b82f6;color:#fff;cursor:pointer}
+    table{width:100%;border-collapse:collapse;margin-top:12px;background:#fff}
+    th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+    th{background:#f5f7fb}
+    .muted{color:#666;font-size:.9rem}
+    .progress{margin-top:8px;color:#444}
+    #status{margin-top:10px;font-size:.95rem}
+    /* suggestions */
+    .suggestions{position:absolute;background:#fff;border:1px solid #ddd;border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,0.06);max-height:220px;overflow:auto;z-index:50;padding:0;margin:6px 0 0 0;list-style:none}
+    .suggestions li{padding:8px 10px;cursor:pointer}
+    .suggestions li:hover{background:#f0f7ff}
+  </style>
+</head>
+<body>
+  <h1>Rusher search</h1>
+  <p class="muted">Search by rusher name and set minimum number of rush attempts (count of rush_attempt). Data loaded from <code>team_data/plays.csv</code>.</p>
+
+  <div class="controls">
+    <label>
+      Search name:
+      <div style="position:relative;display:inline-block">
+        <input id="q" type="text" placeholder="e.g. J.Conner" autocomplete="off" />
+        <ul id="suggestions" class="suggestions" hidden></ul>
+      </div>
+    </label>
+
+    <label>
+      Min attempts:
+      <input id="min" type="number" value="1" min="1" />
+    </label>
+
+    <label>
+      Max rows:
+      <input id="limit" type="number" value="100" min="1" />
+    </label>
+
+    <button id="run">Run</button>
+
+    <div style="margin-left:12px" class="muted">Show: <span id="count">—</span> players</div>
+  </div>
+
+  <div id="status">Status: <span id="statusText">idle</span></div>
+
+  <div id="results">
+    <table id="table" hidden>
+      <thead>
+            <tr>
+              <th>Rusher name</th>
+              <th>Rusher id</th>
+              <th>Attempts</th>
+              <th>Total yards</th>
+              <th>Avg yards</th>
+              <th>Avg Yards Over Expected</th>
+            </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+  let cachedAgg = null; // will hold aggregated rusher data for suggestions
+  // Preload aggregation so suggestions can work immediately
+  (async ()=>{
+    const statusText = document.getElementById('statusText');
+    try{
+      statusText.textContent = 'preloading data...';
+      cachedAgg = await loadAndAggregate(msg=>{ statusText.textContent = msg; });
+      // create a simple index of names for fast suggestions
+      cachedAgg.sort((a,b)=> b.attempts - a.attempts);
+      statusText.textContent = `ready — ${cachedAgg.length} players aggregated`;
+    }catch(err){
+      statusText.textContent = 'idle';
+      console.warn('preload failed', err);
+    }
+  })();
+
+  // Minimal CSV splitter that splits by commas not inside quotes.
+  function splitCSV(line){
+    const re = /,(?=(?:[^"]*"[^"]*")*[^"]*$)/;
+    return line.split(re).map(s=>{
+      // remove surrounding quotes and unescape double quotes
+      s = s.trim();
+      if(s.startsWith('"') && s.endsWith('"')){
+        s = s.slice(1,-1).replace(/""/g,'"');
+      }
+      return s;
+    });
+  }
+
+  async function loadAndAggregate(onProgress){
+    const resp = await fetch('team_data/plays.csv');
+    if(!resp.ok) throw new Error('Failed to fetch team_data/plays.csv: ' + resp.statusText);
+    const text = await resp.text();
+    onProgress('parsing CSV...');
+    const lines = text.split(/\r?\n/);
+    if(lines.length < 2) throw new Error('CSV appears empty');
+    const header = splitCSV(lines[0]);
+    const idx = {
+      rusher_player_name: header.indexOf('rusher_player_name'),
+      rusher_player_id: header.indexOf('rusher_player_id'),
+      rush_attempt: header.indexOf('rush_attempt'),
+      yards_gained: header.indexOf('yards_gained'),
+      ydstogo: header.indexOf('ydstogo')
+    };
+    if(idx.rusher_player_name < 0 || idx.rush_attempt < 0){
+      throw new Error('Required columns not found in CSV header');
+    }
+
+    const map = new Map();
+    const total = lines.length - 1;
+    for(let i=1;i<lines.length;i++){
+      const line = lines[i];
+      if(!line) continue;
+      const fields = splitCSV(line);
+      const rushVal = idx.rush_attempt>=0 ? parseFloat(fields[idx.rush_attempt]) : 0;
+      if(isNaN(rushVal) || rushVal <= 0) continue; // skip non-rush rows
+      const name = fields[idx.rusher_player_name] || '(unknown)';
+      const id = fields[idx.rusher_player_id] || '';
+  const yards = idx.yards_gained>=0 ? parseFloat(fields[idx.yards_gained]) : NaN;
+  const ydstogo = idx.ydstogo>=0 ? parseFloat(fields[idx.ydstogo]) : NaN;
+  // expected yards model from queries.sql: 0.12588674 * ydstogo + 3.4733651
+  const expected = (!isNaN(ydstogo)) ? (0.12588674 * ydstogo + 3.4733651) : NaN;
+  const yoe = (!isNaN(yards) && !isNaN(expected)) ? (yards - expected) : NaN;
+      const key = name || id || ('r'+i);
+      let entry = map.get(key);
+  if(!entry){ entry = {name, id, attempts:0, totalYards:0, totalYoe:0, yoeCount:0}; map.set(key, entry); }
+  entry.attempts += 1;
+  if(!isNaN(yards)) entry.totalYards += yards;
+  if(!isNaN(yoe)) { entry.totalYoe += yoe; entry.yoeCount += 1; }
+
+      if(i % 2000 === 0) onProgress(`processed ${i}/${total} lines`);
+    }
+    onProgress('aggregation complete');
+    // convert to array
+    return Array.from(map.values()).map(e=>({
+      name: e.name,
+      id: e.id,
+      attempts: e.attempts,
+      totalYards: e.totalYards,
+      avgYards: e.attempts? (e.totalYards / e.attempts) : 0,
+      avgYoe: e.yoeCount? (e.totalYoe / e.yoeCount) : 0
+    }));
+  }
+
+  document.getElementById('run').addEventListener('click', async ()=>{
+    const q = document.getElementById('q').value.trim().toLowerCase();
+    const min = parseInt(document.getElementById('min').value) || 1;
+    const limit = parseInt(document.getElementById('limit').value) || 100;
+    const statusText = document.getElementById('statusText');
+    const table = document.getElementById('table');
+    const tbody = table.querySelector('tbody');
+    statusText.textContent = 'loading...';
+    tbody.innerHTML = '';
+    try{
+      const agg = cachedAgg || await loadAndAggregate(msg=>{ statusText.textContent = msg; });
+      // filter
+      let results = agg.filter(r=> r.attempts >= min);
+      if(q) results = results.filter(r=> r.name.toLowerCase().includes(q));
+      results.sort((a,b)=> b.attempts - a.attempts);
+      document.getElementById('count').textContent = results.length;
+      // show table rows (limit)
+      const rows = results.slice(0, limit);
+      for(const r of rows){
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${escapeHtml(r.name)}</td><td>${escapeHtml(r.id)}</td><td>${r.attempts}</td><td>${num(r.totalYards)}</td><td>${num(r.avgYards)}</td><td>${num(r.avgYoe)}</td>`;
+        tbody.appendChild(tr);
+      }
+      table.hidden = rows.length === 0;
+      statusText.textContent = `done — ${results.length} players match`;
+    }catch(err){
+      statusText.textContent = 'error: ' + err.message;
+      console.error(err);
+    }
+  });
+
+  // Suggestions handling
+  const qInput = document.getElementById('q');
+  const sugg = document.getElementById('suggestions');
+  function showSuggestions(forValue){
+    if(!cachedAgg || !forValue){ sugg.hidden = true; return; }
+    const q = forValue.trim().toLowerCase();
+    if(!q){ sugg.hidden = true; return; }
+    const matches = cachedAgg.filter(r=> r.name && r.name.toLowerCase().includes(q)).slice(0,12);
+    if(matches.length === 0){ sugg.hidden = true; return; }
+    sugg.innerHTML = '';
+    for(const m of matches){
+      const li = document.createElement('li');
+      li.textContent = `${m.name} — ${m.attempts} attempts`;
+      li.addEventListener('mousedown', e=>{
+        // use mousedown to set value before blur
+        qInput.value = m.name;
+        sugg.hidden = true;
+        qInput.focus();
+      });
+      li.addEventListener('click', e=>{
+        // also support click
+        document.getElementById('run').click();
+      });
+      sugg.appendChild(li);
+    }
+    sugg.hidden = false;
+  }
+
+  qInput.addEventListener('input', e=>{ showSuggestions(e.target.value); });
+  qInput.addEventListener('focus', e=>{ showSuggestions(e.target.value); });
+  qInput.addEventListener('blur', ()=>{ setTimeout(()=>{ sugg.hidden = true; }, 150); });
+
+  function num(n){ return (Math.round((n||0)*100)/100).toLocaleString(); }
+  function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  // Optional: run on Enter in search
+  document.getElementById('q').addEventListener('keydown', e=>{ if(e.key === 'Enter') document.getElementById('run').click(); });
+
+  </script>
+
+  <!-- NOTE: For this page to fetch team_data/plays.csv you must serve the repo with a static HTTP server
+       Example: in the repo root run 'python3 -m http.server 8000' and open http://localhost:8000/index.html
+       Opening the HTML file directly (file://) may block fetch() due to browser restrictions. -->
+</body>
+</html>
