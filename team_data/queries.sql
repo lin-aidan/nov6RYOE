@@ -62,3 +62,63 @@ SELECT
         end as fourth_down
 FROM plays
 WHERE rush_attempt = 1;
+
+/*Coefficients: [0.199273   0.73200072 1.12417315 0.82187461]*/
+/*Intercept: 2.471750805961095*/
+
+WITH rush_data AS (
+    SELECT 
+        rusher_player_id, 
+        rusher_player_name, 
+        yards_gained, 
+        ydstogo, 
+        down,  -- ✅ include this so we can use it later
+        (
+            0.7320007 * CASE WHEN down = 2 THEN 1 ELSE 0 END +
+            1.12417315 * CASE WHEN down = 3 THEN 1 ELSE 0 END +
+            0.82187461 * CASE WHEN down = 4 THEN 1 ELSE 0 END +
+            0.199273 * ydstogo +
+            2.471750805961095
+        ) AS yards_expected
+    FROM plays
+    WHERE rush_attempt = 1
+)
+SELECT
+    rusher_player_id, 
+    rusher_player_name, 
+    yards_gained, 
+    ydstogo, 
+    down,
+    yards_gained - yards_expected AS ryoe
+FROM rush_data;
+
+/*averaging RYOE*/
+WITH rush_data AS (
+    SELECT 
+        rusher_player_id, 
+        rusher_player_name, 
+        yards_gained, 
+        ydstogo, 
+        down,  -- ✅ include this so we can use it later
+        (
+            0.7320007 * CASE WHEN down = 2 THEN 1 ELSE 0 END +
+            1.12417315 * CASE WHEN down = 3 THEN 1 ELSE 0 END +
+            0.82187461 * CASE WHEN down = 4 THEN 1 ELSE 0 END +
+            0.199273 * ydstogo +
+            2.471750805961095
+        ) AS yards_expected
+    FROM plays
+    WHERE rush_attempt = 1
+)
+SELECT
+    rusher_player_id, 
+    rusher_player_name, 
+    yards_gained, 
+    ydstogo, 
+    down,
+    avg(yards_gained - yards_expected) AS ryoe
+FROM rush_data
+GROUP BY rusher_player_id
+having count(*) >= 100
+order by ryoe desc
+limit 10;
