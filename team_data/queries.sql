@@ -31,3 +31,34 @@ where rush_attempt = 1
 group by rusher_player_id
 having count(rush_attempt) >= 100
 order by avg_ryoe desc;
+
+/*looking at down and distance*/
+select 
+    rusher_player_id, 
+    rusher_player_name, 
+    yards_gained, 
+    ydstogo, 
+    down
+from plays
+where rush_attempt = 1;
+
+/*creating separate columns for second, third, and fourth down*/
+SELECT 
+    rusher_player_id, 
+    rusher_player_name, 
+    yards_gained, 
+    ydstogo, 
+    case 
+        when down = 2 then 1 
+        else 0 
+        end as second_down,
+    case 
+        when down = 3 then 1 
+        else 0 
+        end as third_down,
+    case 
+        when down = 4 then 1 
+        else 0 
+        end as fourth_down
+FROM plays
+WHERE rush_attempt = 1;
